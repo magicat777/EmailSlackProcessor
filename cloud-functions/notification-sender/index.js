@@ -4,7 +4,125 @@
  */
 const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
 const qs = require('querystring');
+const { Logging } = require('@google-cloud/logging');
+const sanitizeHtml = require('sanitize-html');
+
+// Configure axios retry with exponential backoff
+axiosRetry(axios, { 
+  retries: 3, 
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (error) => {
+    return axiosRetry.isNetworkOrIdempotentRequestError(error) || 
+           (error.response && error.response.status === 429);
+  }
+});
+
+// Configure logging
+const logging = new Logging();
+const log = logging.log('notification-sender');
+
+// Set configuration from environment variables
+const MS_GRAPH_TOKEN_URL = process.env.MS_GRAPH_TOKEN_URL || 'https://login.microsoftonline.com';
+const MS_GRAPH_API_URL = process.env.MS_GRAPH_API_URL || 'https://graph.microsoft.com/v1.0';
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT;
+
+// Initialize Secret Manager
+const secretClient = new SecretManagerServiceClient();
+
+/**
+ * Fetches a secret from Secret Manager
+ * 
+ * @param {string} secretName - Name of the secret to fetch
+ * @returns {Promise<string>} - The secret value
+ */
+const getSecret = async (secretName) => {
+  try {
+    const name = `projects/${PROJECT_ID}/secrets/${secretName}/versions/latest`;
+    const [response] = await secretClient.accessSecretVersion({ name });
+    return response.payload.data.toString();
+  } catch (error) {
+    await writeLog(`Error fetching secret ${secretName}: ${error.message}`, 'ERROR');
+    throw new Error(`Failed to fetch secret ${secretName}: ${error.message}`);
+  }
+};
+
+/**
+ * Writes a log entry
+ * 
+ * @param {string} message - Log message
+ * @param {string} severity - Log severity (INFO, WARNING, ERROR)
+ */
+const writeLog = async (message, severity = 'INFO') => {
+  const entry = log.entry({ severity }, message);
+  await log.write(entry);
+};
+
+/**
+ * Handles and categorizes errors
+ * 
+ * @param {Error} error - The error to handle
+ * @param {Object} res - Express response object
+ */
+const handleError = async (error, res) => {
+  let statusCode = 500;
+  let errorMessage = 'Internal Server Error';
+  let errorDetails = error.message;
+
+  await writeLog(`Error: ${error.message}`, 'ERROR');
+
+  if (error.response) {
+    statusCode = error.response.status;
+    errorMessage = error.response.data?.error || 'API Error';
+    errorDetails = error.response.data?.error_description || error.message;
+    
+    await writeLog(`API Error: ${statusCode} - ${errorMessage}: ${errorDetails}`, 'ERROR');
+  } else if (error.request) {
+    statusCode = 503;
+    errorMessage = 'Service Unavailable';
+    errorDetails = 'No response received from the API';
+    
+    await writeLog(`Network Error: ${errorDetails}`, 'ERROR');
+  }
+
+  res.status(statusCode).json({
+    error: errorMessage,
+    details: errorDetails
+  });
+};
+
+/**
+ * Validates request data
+ * 
+ * @param {Object} body - Request body containing action items
+ * @returns {Object} - Validated data or throws error
+ */
+const validateRequestData = (body) => {
+  const { actionItems = [] } = body;
+  
+  if (!Array.isArray(actionItems)) {
+    throw new Error('Invalid action items data. Expected an array of action items.');
+  }
+  
+  return { actionItems };
+};
+
+/**
+ * Sanitizes HTML content to prevent XSS attacks
+ * 
+ * @param {string} html - HTML content to sanitize
+ * @returns {string} - Sanitized HTML
+ */
+const sanitizeContent = (html) => {
+  return sanitizeHtml(html, {
+    allowedTags: sanitizeHtml.defaults.allowedTags.concat(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']),
+    allowedAttributes: {
+      ...sanitizeHtml.defaults.allowedAttributes,
+      '*': ['class', 'style']
+    }
+  });
+};
 
 /**
  * Creates and sends a summary email with action items
@@ -13,33 +131,31 @@ const qs = require('querystring');
  */
 exports.sendSummaryEmail = async (req, res) => {
   try {
-    // Get secrets from Secret Manager
-    const secretClient = new SecretManagerServiceClient();
-    const [clientIdResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-client-id/versions/latest',
-    });
-    const [clientSecretResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-client-secret/versions/latest',
-    });
-    const [refreshTokenResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-refresh-token/versions/latest',
-    });
-    const [tenantIdResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-tenant-id/versions/latest',
-    });
-    const [recipientEmailResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/notification-recipient-email/versions/latest',
-    });
+    await writeLog('Starting summary email generation', 'INFO');
     
-    const clientId = clientIdResponse.payload.data.toString();
-    const clientSecret = clientSecretResponse.payload.data.toString();
-    const refreshToken = refreshTokenResponse.payload.data.toString();
-    const tenantId = tenantIdResponse.payload.data.toString();
-    const recipientEmail = recipientEmailResponse.payload.data.toString();
+    // Authenticate request - in production implement proper authentication
+    // For example:
+    // const authHeader = req.headers.authorization;
+    // if (!authHeader || !verifyAuth(authHeader)) {
+    //   return res.status(401).json({ error: 'Unauthorized' });
+    // }
+    
+    // Validate input data
+    const { actionItems } = validateRequestData(req.body);
+    await writeLog(`Generating summary email with ${actionItems.length} action items`, 'INFO');
+    
+    // Get all secrets in parallel
+    const [clientId, clientSecret, refreshToken, tenantId, recipientEmail] = await Promise.all([
+      getSecret('ms-graph-client-id'),
+      getSecret('ms-graph-client-secret'),
+      getSecret('ms-graph-refresh-token'),
+      getSecret('ms-graph-tenant-id'),
+      getSecret('notification-recipient-email')
+    ]);
     
     // Get a new access token using the refresh token
     const tokenResponse = await axios.post(
-      `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+      `${MS_GRAPH_TOKEN_URL}/${tenantId}/oauth2/v2.0/token`,
       qs.stringify({
         client_id: clientId,
         client_secret: clientSecret,
@@ -55,16 +171,7 @@ exports.sendSummaryEmail = async (req, res) => {
     );
     
     const accessToken = tokenResponse.data.access_token;
-    
-    // Action items data should be provided in the request body
-    // In production, you would likely fetch this from a database or API
-    const { actionItems = [] } = req.body;
-    
-    if (!actionItems || !Array.isArray(actionItems)) {
-      return res.status(400).json({
-        error: 'Invalid action items data. Expected an array of action items.'
-      });
-    }
+    await writeLog('Successfully obtained access token', 'INFO');
     
     // Format the email content
     const today = new Date().toLocaleDateString('en-US', {
@@ -78,6 +185,12 @@ exports.sendSummaryEmail = async (req, res) => {
     const itemsByProject = {};
     
     actionItems.forEach(item => {
+      // Validate item structure
+      if (!item.content) {
+        writeLog(`Skipping action item with missing content: ${JSON.stringify(item)}`, 'WARNING');
+        return;
+      }
+      
       const project = item.project || 'Unassigned';
       if (!itemsByProject[project]) {
         itemsByProject[project] = [];
@@ -109,7 +222,7 @@ exports.sendSummaryEmail = async (req, res) => {
     
     // Add projects and their action items
     Object.keys(itemsByProject).forEach(project => {
-      htmlContent += `<h2>${project}</h2>`;
+      htmlContent += `<h2>${sanitizeContent(project)}</h2>`;
       
       itemsByProject[project].forEach(item => {
         const dueDate = item.due_date 
@@ -120,13 +233,17 @@ exports.sendSummaryEmail = async (req, res) => {
             })
           : 'No due date';
           
+        const priority = item.priority || 'medium';
+        const sanitizedContent = sanitizeContent(item.content);
+        const sanitizedAssignee = item.assignee ? sanitizeContent(item.assignee) : '';
+          
         htmlContent += `
-          <div class="action-item ${item.priority}">
-            <div class="action-content">${item.content}</div>
+          <div class="action-item ${priority}">
+            <div class="action-content">${sanitizedContent}</div>
             <div class="action-meta">
-              ${item.assignee ? `Assigned to: ${item.assignee}<br>` : ''}
+              ${sanitizedAssignee ? `Assigned to: ${sanitizedAssignee}<br>` : ''}
               ${item.due_date ? `<span class="action-due">Due: ${dueDate}</span><br>` : ''}
-              Priority: ${item.priority.charAt(0).toUpperCase() + item.priority.slice(1)}
+              Priority: ${priority.charAt(0).toUpperCase() + priority.slice(1)}
             </div>
           </div>
         `;
@@ -161,7 +278,7 @@ exports.sendSummaryEmail = async (req, res) => {
     
     // Send the email using Microsoft Graph API
     await axios.post(
-      'https://graph.microsoft.com/v1.0/me/sendMail',
+      `${MS_GRAPH_API_URL}/me/sendMail`,
       emailMessage,
       {
         headers: {
@@ -171,25 +288,51 @@ exports.sendSummaryEmail = async (req, res) => {
       }
     );
     
+    await writeLog('Summary email sent successfully', 'INFO');
     res.status(200).json({
+      status: 'success',
       message: 'Summary email sent successfully',
       recipient: recipientEmail,
-      itemsCount: actionItems.length
+      itemsCount: actionItems.length,
+      timestamp: new Date().toISOString()
     });
     
   } catch (error) {
-    console.error('Error sending summary email:', error);
-    res.status(500).json({
-      error: 'Failed to send summary email',
-      details: error.message
-    });
+    // Centralized error handling
+    await handleError(error, res);
   }
 };
 
 /**
- * HTTP function that triggers summary generation and delivery
+ * HTTP function that triggers the daily summary generation
  */
-exports.triggerDailySummary = (req, res) => {
-  // This function would be called by Cloud Scheduler
-  res.status(200).send('Daily summary generation triggered');
+exports.triggerDailySummary = async (req, res) => {
+  try {
+    await writeLog('Daily summary generation triggered', 'INFO');
+    
+    // Authenticate request - in production implement proper authentication
+    // For Cloud Scheduler, use IAM-based authentication
+    
+    // Implement the summary generation logic here, for example:
+    // 1. Fetch pending action items from Neo4j database
+    // 2. Generate summary
+    // 3. Send email with the summary
+    
+    // For demo purposes, we'll just simulate a successful trigger
+    await writeLog('Daily summary generation request received', 'INFO');
+    
+    res.status(200).json({
+      status: 'success',
+      message: 'Daily summary generation triggered',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    await writeLog(`Error triggering daily summary: ${error.message}`, 'ERROR');
+    res.status(500).json({
+      status: 'error',
+      message: 'Failed to trigger daily summary',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 };

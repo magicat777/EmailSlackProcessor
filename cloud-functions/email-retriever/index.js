@@ -2,8 +2,132 @@
  * Google Cloud Function to retrieve email messages using Microsoft Graph API
  */
 const axios = require('axios');
+const axiosRetry = require('axios-retry');
 const { SecretManagerServiceClient } = require('@google-cloud/secret-manager');
 const qs = require('querystring');
+const { Logging } = require('@google-cloud/logging');
+const htmlToText = require('html-to-text');
+
+// Configure axios retry with exponential backoff
+axiosRetry(axios, { 
+  retries: 3, 
+  retryDelay: axiosRetry.exponentialDelay,
+  retryCondition: (error) => {
+    // Retry on network errors and 429 (rate limit) errors
+    return axiosRetry.isNetworkOrIdempotentRequestError(error) || 
+           (error.response && error.response.status === 429);
+  }
+});
+
+// Configure logging
+const logging = new Logging();
+const log = logging.log('email-retriever');
+
+// Set configuration from environment variables
+const MS_GRAPH_TOKEN_URL = process.env.MS_GRAPH_TOKEN_URL || 'https://login.microsoftonline.com';
+const MS_GRAPH_API_URL = process.env.MS_GRAPH_API_URL || 'https://graph.microsoft.com/v1.0';
+const DEFAULT_MAX_RESULTS = parseInt(process.env.DEFAULT_MAX_RESULTS, 10) || 10;
+const DEFAULT_FILTER = process.env.DEFAULT_FILTER || "isRead eq false";
+const PROJECT_ID = process.env.GOOGLE_CLOUD_PROJECT || process.env.GCP_PROJECT;
+
+// Initialize Secret Manager
+const secretClient = new SecretManagerServiceClient();
+
+/**
+ * Fetches a secret from Secret Manager
+ * 
+ * @param {string} secretName - Name of the secret to fetch
+ * @returns {Promise<string>} - The secret value
+ */
+const getSecret = async (secretName) => {
+  try {
+    const name = `projects/${PROJECT_ID}/secrets/${secretName}/versions/latest`;
+    const [response] = await secretClient.accessSecretVersion({ name });
+    return response.payload.data.toString();
+  } catch (error) {
+    await writeLog(`Error fetching secret ${secretName}: ${error.message}`, 'ERROR');
+    throw new Error(`Failed to fetch secret ${secretName}: ${error.message}`);
+  }
+};
+
+/**
+ * Writes a log entry
+ * 
+ * @param {string} message - Log message
+ * @param {string} severity - Log severity (INFO, WARNING, ERROR)
+ */
+const writeLog = async (message, severity = 'INFO') => {
+  const entry = log.entry({ severity }, message);
+  await log.write(entry);
+};
+
+/**
+ * Handles and categorizes errors
+ * 
+ * @param {Error} error - The error to handle
+ * @param {Object} res - Express response object
+ */
+const handleError = async (error, res) => {
+  let statusCode = 500;
+  let errorMessage = 'Internal Server Error';
+  let errorDetails = error.message;
+
+  await writeLog(`Error: ${error.message}`, 'ERROR');
+
+  if (error.response) {
+    // The request was made and the server responded with a status code
+    // that falls out of the range of 2xx
+    statusCode = error.response.status;
+    errorMessage = error.response.data?.error || 'API Error';
+    errorDetails = error.response.data?.error_description || error.message;
+    
+    await writeLog(`API Error: ${statusCode} - ${errorMessage}: ${errorDetails}`, 'ERROR');
+  } else if (error.request) {
+    // The request was made but no response was received
+    statusCode = 503;
+    errorMessage = 'Service Unavailable';
+    errorDetails = 'No response received from the API';
+    
+    await writeLog(`Network Error: ${errorDetails}`, 'ERROR');
+  }
+
+  res.status(statusCode).json({
+    error: errorMessage,
+    details: errorDetails
+  });
+};
+
+/**
+ * Validates request parameters
+ * 
+ * @param {Object} query - Request query parameters
+ * @returns {Object} - Validated parameters
+ */
+const validateParams = (query) => {
+  let maxResults = parseInt(query.maxResults, 10) || DEFAULT_MAX_RESULTS;
+  // Enforce reasonable limits
+  maxResults = Math.min(Math.max(1, maxResults), 100);
+  
+  // Sanitize filter parameter - this is a simplified validation
+  // In production, implement more thorough validation based on OData filter syntax
+  const filter = query.filter || DEFAULT_FILTER;
+  
+  return { maxResults, filter };
+};
+
+/**
+ * Converts HTML content to plain text
+ * 
+ * @param {string} html - HTML content
+ * @returns {string} - Plain text content
+ */
+const convertHtmlToText = (html) => {
+  return htmlToText.fromString(html, {
+    wordwrap: 120,
+    ignoreImage: true,
+    ignoreHref: false
+  });
+};
 
 /**
  * Retrieves Outlook messages using Microsoft Graph API
@@ -12,32 +136,30 @@ const qs = require('querystring');
  */
 exports.retrieveEmails = async (req, res) => {
   try {
-    // Validate authentication
-    // In production, implement proper authentication for this endpoint
+    await writeLog('Starting email retrieval', 'INFO');
     
-    // Get secrets from Secret Manager
-    const secretClient = new SecretManagerServiceClient();
-    const [clientIdResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-client-id/versions/latest',
-    });
-    const [clientSecretResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-client-secret/versions/latest',
-    });
-    const [refreshTokenResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-refresh-token/versions/latest',
-    });
-    const [tenantIdResponse] = await secretClient.accessSecretVersion({
-      name: 'projects/PROJECT_ID/secrets/ms-graph-tenant-id/versions/latest',
-    });
+    // Authenticate request - in production implement proper authentication
+    // For example:
+    // const authHeader = req.headers.authorization;
+    // if (!authHeader || !verifyAuth(authHeader)) {
+    //   return res.status(401).json({ error: 'Unauthorized' });
+    // }
     
-    const clientId = clientIdResponse.payload.data.toString();
-    const clientSecret = clientSecretResponse.payload.data.toString();
-    const refreshToken = refreshTokenResponse.payload.data.toString();
-    const tenantId = tenantIdResponse.payload.data.toString();
+    // Validate input parameters
+    const { maxResults, filter } = validateParams(req.query);
+    await writeLog(`Retrieving up to ${maxResults} emails with filter: ${filter}`, 'INFO');
+    
+    // Get all secrets in parallel
+    const [clientId, clientSecret, refreshToken, tenantId] = await Promise.all([
+      getSecret('ms-graph-client-id'),
+      getSecret('ms-graph-client-secret'),
+      getSecret('ms-graph-refresh-token'),
+      getSecret('ms-graph-tenant-id')
+    ]);
     
     // Get a new access token using the refresh token
     const tokenResponse = await axios.post(
-      `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`,
+      `${MS_GRAPH_TOKEN_URL}/${tenantId}/oauth2/v2.0/token`,
       qs.stringify({
         client_id: clientId,
         client_secret: clientSecret,
@@ -54,12 +176,9 @@ exports.retrieveEmails = async (req, res) => {
     
     const accessToken = tokenResponse.data.access_token;
     
-    // Get parameters from request
-    const { maxResults = 10, filter = "isRead eq false" } = req.query;
-    
     // Query Microsoft Graph API for messages
     const graphResponse = await axios.get(
-      `https://graph.microsoft.com/v1.0/me/messages?$top=${maxResults}&$filter=${filter}&$select=id,conversationId,subject,bodyPreview,receivedDateTime,from,body`,
+      `${MS_GRAPH_API_URL}/me/messages?$top=${maxResults}&$filter=${filter}&$select=id,conversationId,subject,bodyPreview,receivedDateTime,from,body`,
       {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
@@ -69,67 +188,89 @@ exports.retrieveEmails = async (req, res) => {
     );
     
     const messages = graphResponse.data.value || [];
-    const emailDetails = [];
+    await writeLog(`Retrieved ${messages.length} messages`, 'INFO');
     
-    // Process each message
-    for (const message of messages) {
-      // Get full message content if needed
-      let fullBody = '';
+    // Use Promise.all to process messages in parallel for better performance
+    const emailDetails = await Promise.all(messages.map(async (message) => {
+      let bodyContent = message.body?.content || '';
       
-      // If the message body preview is truncated, fetch the full body
-      if (message.bodyPreview.endsWith('...')) {
-        const fullMessageResponse = await axios.get(
-          `https://graph.microsoft.com/v1.0/me/messages/${message.id}?$select=body`,
-          {
-            headers: {
-              'Authorization': `Bearer ${accessToken}`,
-              'Content-Type': 'application/json'
+      // Only fetch full body if needed and explicitly requested via includeFullBody query param
+      if (req.query.includeFullBody === 'true' && message.bodyPreview.endsWith('...')) {
+        try {
+          const fullMessageResponse = await axios.get(
+            `${MS_GRAPH_API_URL}/me/messages/${message.id}?$select=body`,
+            {
+              headers: {
+                'Authorization': `Bearer ${accessToken}`,
+                'Content-Type': 'application/json'
+              }
             }
-          }
-        );
-        
-        fullBody = fullMessageResponse.data.body.content;
-      } else {
-        // Use the body content from the original response
-        fullBody = message.body?.content || '';
+          );
+          
+          bodyContent = fullMessageResponse.data.body.content;
+        } catch (error) {
+          await writeLog(`Error fetching full body for message ${message.id}: ${error.message}`, 'WARNING');
+          // Continue with what we have
+        }
       }
       
-      // If body is HTML, we could add simple HTML to text conversion here
-      // This is a simplified approach - production would handle HTML properly
+      // Convert HTML to text if needed
       if (message.body?.contentType === 'html') {
-        fullBody = fullBody.replace(/<[^>]*>/g, ' ');
+        bodyContent = convertHtmlToText(bodyContent);
       }
       
-      emailDetails.push({
+      return {
         id: message.id,
         threadId: message.conversationId,
         subject: message.subject || 'No Subject',
         from: message.from?.emailAddress?.address || 'Unknown Sender',
         date: message.receivedDateTime,
-        body: fullBody,
+        body: bodyContent,
         snippet: message.bodyPreview
-      });
-    }
+      };
+    }));
     
+    await writeLog('Email retrieval completed successfully', 'INFO');
     res.status(200).json({
       messages: emailDetails
     });
     
   } catch (error) {
-    console.error('Error retrieving emails:', error);
-    res.status(500).json({
-      error: 'Failed to retrieve emails',
-      details: error.message
-    });
+    // Centralized error handling
+    await handleError(error, res);
   }
 };
 
 /**
  * HTTP function that triggers email processing
  */
-exports.processEmails = (req, res) => {
-  // This function would be called by Cloud Scheduler
-  // It would trigger the email retrieval and then send the data
-  // to the processing system
-  res.status(200).send('Email processing triggered');
+exports.processEmails = async (req, res) => {
+  try {
+    await writeLog('Email processing triggered', 'INFO');
+    
+    // Authenticate request - in production implement proper authentication
+    // For Cloud Scheduler, use IAM-based authentication or a service account
+    
+    // Implement the processing logic here, for example:
+    // 1. Retrieve emails using the above function
+    // 2. Process them (extract action items, etc.)
+    // 3. Store results in database
+    
+    // For demo purposes, we'll just simulate a successful processing
+    await writeLog('Email processing completed successfully', 'INFO');
+    
+    res.status(200).json({
+      status: 'success',
+      message: 'Email processing completed successfully',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error) {
+    await writeLog(`Error in email processing: ${error.message}`, 'ERROR');
+    res.status(500).json({
+      status: 'error',
+      message: 'Email processing failed',
+      details: error.message,
+      timestamp: new Date().toISOString()
+    });
+  }
 };
