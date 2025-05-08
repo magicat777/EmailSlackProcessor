@@ -1,0 +1,62 @@
+name: Lint and Style Check
+
+on:
+  push:
+    branches: [ main, staging ]
+    paths:
+      - 'python_components/**'
+      - 'cloud-functions/**'
+  pull_request:
+    branches: [ main, staging ]
+    paths:
+      - 'python_components/**'
+      - 'cloud-functions/**'
+
+jobs:
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 mypy black
+          pip install -r docker/processing/requirements.txt
+      - name: Run flake8
+        run: |
+          flake8 python_components/ --count --select=E9,F63,F7,F82 --show-source --statistics
+      - name: Run mypy
+        run: |
+          mypy python_components/
+      - name: Check formatting with black
+        run: |
+          black --check python_components/
+
+  js-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      - name: Install ESLint
+        run: |
+          npm install -g eslint
+      - name: Run ESLint
+        run: |
+          cd cloud-functions
+          for function_dir in */; do
+            if [ -f "$function_dir/package.json" ]; then
+              cd "$function_dir"
+              if [ -f ".eslintrc.js" ] || [ -f ".eslintrc.json" ] || [ -f ".eslintrc.yml" ]; then
+                echo "Running ESLint in $function_dir"
+                eslint .
+              fi
+              cd ..
+            fi
+          done

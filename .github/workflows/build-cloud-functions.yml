@@ -1,0 +1,43 @@
+name: Build Cloud Functions
+
+on:
+  push:
+    branches: [ main, staging ]
+    paths:
+      - 'cloud-functions/**'
+  pull_request:
+    branches: [ main, staging ]
+    paths:
+      - 'cloud-functions/**'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '16'
+      - name: Install dependencies
+        run: |
+          cd cloud-functions
+          for function_dir in */; do
+            if [ -f "$function_dir/package.json" ]; then
+              cd "$function_dir"
+              npm install
+              cd ..
+            fi
+          done
+      - name: Build
+        run: |
+          cd cloud-functions
+          for function_dir in */; do
+            if [ -f "$function_dir/package.json" ]; then
+              cd "$function_dir"
+              if [ -f "package.json" ] && grep -q "\"build\":" "package.json"; then
+                npm run build
+              fi
+              cd ..
+            fi
+          done

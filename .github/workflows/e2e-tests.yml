@@ -1,0 +1,49 @@
+name: End-to-End Tests
+
+on:
+  workflow_run:
+    workflows: ["Run Tests"]
+    types:
+      - completed
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    services:
+      neo4j:
+        image: neo4j:5.15.0
+        ports:
+          - 7474:7474
+          - 7687:7687
+        env:
+          NEO4J_AUTH: neo4j/password
+          NEO4J_apoc_export_file_enabled: true
+          NEO4J_apoc_import_file_enabled: true
+          NEO4J_apoc_import_file_use__neo4j__config: true
+          NEO4J_dbms_security_procedures_unrestricted: apoc.*
+    
+    steps:
+      - uses: actions/checkout@v3
+      - name: Set up environment
+        run: docker-compose up -d
+      - name: Wait for services to be ready
+        run: sleep 30
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      - name: Install Python dependencies
+        run: pip install -r docker/processing/requirements.txt
+      - name: Install Python test dependencies
+        run: pip install pytest pytest-cov
+      - name: Run integration tests
+        run: |
+          python -m pytest python_components/tests/ -v
+        env:
+          NEO4J_URI: bolt://localhost:7687
+          NEO4J_USER: neo4j
+          NEO4J_PASSWORD: password
+          CLAUDE_API_KEY: ${{ secrets.CLAUDE_API_KEY }}
+      - name: Teardown environment
+        run: docker-compose down
