@@ -16,7 +16,7 @@ This guide provides solutions for common issues encountered with Docker and Neo4
 
 2. Verify both HTTP and Bolt interfaces are responding:
    ```bash
-   curl -s -I http://localhost:7475
+   curl -s -I http://localhost:7490
    docker exec icap-neo4j cypher-shell -u neo4j -p password "RETURN 1"
    ```
 
@@ -40,12 +40,12 @@ This guide provides solutions for common issues encountered with Docker and Neo4
 **Issue:** Port conflicts when running Neo4j Desktop alongside Docker containers.
 
 **Solutions:**
-1. We use remapped ports (7475:7474 and 7688:7687) to avoid conflicts
+1. We use remapped ports (7490:7474 and 7690:7687) to avoid conflicts
 2. To use different ports, update both docker-compose.yml and processing environment variables:
    ```yaml
    ports:
-     - "7476:7474"  # Different HTTP port
-     - "7689:7687"  # Different Bolt port
+     - "7491:7474"  # Different HTTP port
+     - "7691:7687"  # Different Bolt port
    
    environment:
      - NEO4J_URI=bolt://neo4j:7687  # Internal port remains the same

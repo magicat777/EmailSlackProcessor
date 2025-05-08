@@ -66,7 +66,7 @@ Once everything is set up, you can start the system:
 docker-compose up -d
 ```
 
-Access the Neo4j browser at http://localhost:7474 to view and query the database.
+Access the Neo4j browser at http://localhost:7490 to view and query the database.
 
 ## Development
 - Python code follows PEP 8 guidelines

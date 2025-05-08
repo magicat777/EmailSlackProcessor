@@ -4,10 +4,10 @@ services:
   neo4j:
     container_name: icap-neo4j
     image: neo4j:5.9.0
-    # Use remapped ports to avoid conflicts with potential Neo4j Desktop
+    # Use remapped ports to avoid conflicts with existing Neo4j instances
     ports:
-      - "7475:7474"  # HTTP
-      - "7688:7687"  # Bolt
+      - "7490:7474"  # HTTP - using port 7490 externally
+      - "7690:7687"  # Bolt - using port 7690 externally
     environment:
       - NEO4J_AUTH=neo4j/password
       - NEO4J_ACCEPT_LICENSE_AGREEMENT=yes
