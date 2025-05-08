@@ -36,19 +36,34 @@ services:
 
   processing:
     container_name: icap-processing
-    build: ./docker/processing
+    build:
+      context: ./docker/processing
+      args:
+        - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-icap}
     volumes:
       - ./python_components:/app/python_components
+      - ./scripts:/app/scripts
       - ./data:/app/data
+      # Mount service account credentials if available
+      - ${GOOGLE_APPLICATION_CREDENTIALS:-./empty-file}:${GOOGLE_APPLICATION_CREDENTIALS:-/app/empty-file}:ro
     environment:
+      # Base configuration
       - NEO4J_URI=bolt://neo4j:7687
       - NEO4J_USER=neo4j
       - NEO4J_PASSWORD=password
-      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
-      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-cyberpunk-gm-screen}
       - PYTHONDONTWRITEBYTECODE=1
       - PYTHONUNBUFFERED=1
       - LOGGING_LEVEL=INFO
+      # Cloud configuration
+      - GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT:-icap}
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS}
+      # API Keys - can be provided directly or via Secret Manager
+      - CLAUDE_API_KEY=${CLAUDE_API_KEY}
+      - MS_GRAPH_CLIENT_ID=${MS_GRAPH_CLIENT_ID}
+      - MS_GRAPH_CLIENT_SECRET=${MS_GRAPH_CLIENT_SECRET}
+      - MS_GRAPH_TENANT_ID=${MS_GRAPH_TENANT_ID}
+      - MS_GRAPH_REFRESH_TOKEN=${MS_GRAPH_REFRESH_TOKEN}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
     networks:
       - icap-network
     depends_on:

@@ -2,8 +2,10 @@ anthropic==0.8.1
 google-api-python-client==2.112.0
 google-auth==2.27.0
 google-auth-oauthlib==1.2.0
+google-cloud-secret-manager==2.16.4
 neo4j==5.15.0
 python-dotenv==1.0.0
+python-dateutil==2.8.2
 requests==2.31.0
 slack-sdk==3.26.0
 pydantic==2.6.1

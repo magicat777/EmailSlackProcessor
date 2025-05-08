@@ -39,8 +39,17 @@ const secretClient = new SecretManagerServiceClient();
  */
 const getSecret = async (secretName) => {
   try {
+    // First check if it's available as an environment variable
+    const envName = secretName.replace(/-/g, '_').toUpperCase();
+    if (process.env[envName]) {
+      await writeLog(`Using ${secretName} from environment variables`, 'INFO');
+      return process.env[envName];
+    }
+    
+    // Otherwise get it from Secret Manager
     const name = `projects/${PROJECT_ID}/secrets/${secretName}/versions/latest`;
     const [response] = await secretClient.accessSecretVersion({ name });
+    await writeLog(`Retrieved ${secretName} from Secret Manager`, 'INFO');
     return response.payload.data.toString();
   } catch (error) {
     await writeLog(`Error fetching secret ${secretName}: ${error.message}`, 'ERROR');

@@ -20,17 +20,22 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY entrypoint.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
-# Copy application code
-COPY . .
-
 # Create necessary directories
-RUN mkdir -p /app/data /app/logs
+RUN mkdir -p /app/data /app/logs /app/secrets
 
 # Set environment variables
 ENV PYTHONPATH=/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 ENV TZ=UTC
+
+# Args that can be passed at build time
+ARG GOOGLE_CLOUD_PROJECT=""
+ENV GOOGLE_CLOUD_PROJECT=${GOOGLE_CLOUD_PROJECT}
+
+# Copy application code
+# We do this last to better leverage Docker caching
+COPY . .
 
 # Command to run when container starts
 ENTRYPOINT ["/app/entrypoint.sh"]

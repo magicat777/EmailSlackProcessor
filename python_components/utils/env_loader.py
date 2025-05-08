@@ -1,0 +1,169 @@
+"""
+Environment variable loader utility for ICAP.
+"""
+import os
+import logging
+from typing import Optional, List, Dict, Any
+from python_components.utils.secrets_manager import SecretsManager
+
+logger = logging.getLogger("icap.env")
+
+class EnvLoader:
+    """Utility for loading environment variables from Secret Manager and .env files."""
+    
+    def __init__(self, project_id: Optional[str] = None, 
+                 credentials_path: Optional[str] = None):
+        """
+        Initialize the environment loader.
+        
+        Args:
+            project_id: Google Cloud project ID. If None, uses environment variable
+            credentials_path: Path to service account key file
+        """
+        self.project_id = project_id or os.getenv("GOOGLE_CLOUD_PROJECT")
+        self.credentials_path = credentials_path
+        
+    def load_secrets_to_env(self, secret_keys: Optional[List[str]] = None, 
+                           override_existing: bool = False) -> Dict[str, bool]:
+        """
+        Load secrets from Secret Manager to environment variables.
+        
+        Args:
+            secret_keys: List of secret keys to load. If None, loads default set
+            override_existing: Whether to override existing environment variables
+            
+        Returns:
+            Dictionary with secret keys and whether they were loaded
+        """
+        results = {}
+        
+        if not self.project_id:
+            logger.warning("No project ID provided, cannot load secrets")
+            return results
+        
+        # Use default secrets if none provided
+        if not secret_keys:
+            secret_keys = [
+                "neo4j-uri",
+                "neo4j-user",
+                "neo4j-password",
+                "claude-api-key",
+                "ms-graph-client-id",
+                "ms-graph-client-secret",
+                "ms-graph-tenant-id",
+                "ms-graph-refresh-token",
+                "slack-bot-token",
+                "notification-recipient-email"
+            ]
+        
+        try:
+            secrets_manager = SecretsManager(
+                project_id=self.project_id, 
+                credentials_path=self.credentials_path
+            )
+            
+            # Load each secret to environment
+            for key in secret_keys:
+                try:
+                    # Check if already in environment and respect override flag
+                    env_key = key.replace("-", "_").upper()
+                    if os.getenv(env_key) and not override_existing:
+                        logger.debug(f"Environment variable {env_key} already set, skipping")
+                        results[key] = False
+                        continue
+                    
+                    # Get and set the secret
+                    secret_value = secrets_manager.get_secret(key)
+                    os.environ[env_key] = secret_value
+                    logger.debug(f"Loaded secret: {key} as {env_key}")
+                    results[key] = True
+                    
+                except Exception as e:
+                    logger.warning(f"Could not load secret {key}: {str(e)}")
+                    results[key] = False
+            
+            logger.info(f"Loaded {sum(results.values())} secrets from Google Secret Manager")
+            
+        except Exception as e:
+            logger.warning(f"Could not initialize Secret Manager: {str(e)}")
+        
+        return results
+    
+    def generate_dotenv_file(self, output_path: str, secret_keys: Optional[List[str]] = None) -> bool:
+        """
+        Generate a .env file from Secret Manager secrets.
+        
+        Args:
+            output_path: Path to write the .env file
+            secret_keys: List of secret keys to include. If None, uses default set
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Make sure parent directory exists
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            
+            # Use default secrets if none provided
+            if not secret_keys:
+                secret_keys = [
+                    "neo4j-uri",
+                    "neo4j-user",
+                    "neo4j-password",
+                    "claude-api-key",
+                    "ms-graph-client-id",
+                    "ms-graph-client-secret",
+                    "ms-graph-tenant-id",
+                    "ms-graph-refresh-token",
+                    "slack-bot-token",
+                    "notification-recipient-email"
+                ]
+            
+            # Initialize Secret Manager
+            secrets_manager = SecretsManager(
+                project_id=self.project_id, 
+                credentials_path=self.credentials_path
+            )
+            
+            # Create .env file content
+            env_content = "# Generated by ICAP EnvLoader\n\n"
+            loaded_count = 0
+            
+            for key in secret_keys:
+                try:
+                    # Get the secret
+                    secret_value = secrets_manager.get_secret(key)
+                    
+                    # Convert key to environment variable format
+                    env_key = key.replace("-", "_").upper()
+                    
+                    # Add to .env content
+                    env_content += f"{env_key}={secret_value}\n"
+                    loaded_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Could not load secret {key}: {str(e)}")
+                    continue
+            
+            # Write the file
+            with open(output_path, 'w') as f:
+                f.write(env_content)
+                
+            logger.info(f"Created .env file at {output_path} with {loaded_count} secrets")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error generating .env file: {str(e)}")
+            return False
+            
+    def validate_required_vars(self, required_vars: List[str]) -> List[str]:
+        """
+        Check if required environment variables are set.
+        
+        Args:
+            required_vars: List of required variable names
+            
+        Returns:
+            List of missing variables
+        """
+        return [var for var in required_vars if not os.getenv(var)]
