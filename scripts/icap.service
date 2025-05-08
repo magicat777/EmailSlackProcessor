@@ -1,0 +1,29 @@
+[Unit]
+Description=ICAP Processing Engine
+After=network.target
+
+[Service]
+Type=simple
+User=icap
+Group=icap
+WorkingDirectory=/opt/icap
+ExecStart=/opt/icap/venv/bin/python /opt/icap/scripts/icap_daemon.py --queue --scheduler --webhook --queue-dir /var/lib/icap/queue --pid-file /run/icap/icap.pid --log-file /var/log/icap/daemon.log
+Restart=on-failure
+RestartSec=5s
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=icap
+Environment="PYTHONPATH=/opt/icap"
+
+# Create runtime directory and limit process capabilities
+RuntimeDirectory=icap
+RuntimeDirectoryMode=0755
+
+# Security hardening
+ProtectSystem=full
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/var/lib/icap /var/log/icap /run/icap
+
+[Install]
+WantedBy=multi-user.target

@@ -41,11 +41,18 @@ class WebhookHandler:
     
     async def start(self) -> None:
         """Start the webhook server."""
-        runner = web.AppRunner(self.app)
-        await runner.setup()
-        site = web.TCPSite(runner, self.host, self.port)
-        await site.start()
+        self.runner = web.AppRunner(self.app)
+        await self.runner.setup()
+        self.site = web.TCPSite(self.runner, self.host, self.port)
+        await self.site.start()
         logger.info(f"Webhook server started on http://{self.host}:{self.port}")
+    
+    async def stop(self) -> None:
+        """Stop the webhook server."""
+        if hasattr(self, 'site'):
+            logger.info("Stopping webhook server...")
+            await self.runner.cleanup()
+            logger.info("Webhook server stopped")
     
     async def handle_email_webhook(self, request: web.Request) -> web.Response:
         """

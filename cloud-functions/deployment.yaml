@@ -1,0 +1,42 @@
+# ICAP Cloud Functions Deployment Configuration
+
+# Global settings
+project_id: icap
+region: us-central1
+runtime: nodejs16
+memory: 256MB
+timeout: 60s
+service_account: icap-service-account@icap.iam.gserviceaccount.com
+
+# Common environment variables
+env_vars:
+  WEBHOOK_URL: https://icap-processing.example.com/webhook
+  LOG_LEVEL: info
+  GOOGLE_CLOUD_PROJECT: icap
+
+# Function-specific configurations
+functions:
+  email-retriever:
+    memory: 512MB  # Override global setting
+    timeout: 120s  # Override global setting
+    schedule: "every 10 minutes"
+    env_vars:
+      MS_GRAPH_TOKEN_URL: https://login.microsoftonline.com
+      MS_GRAPH_API_URL: https://graph.microsoft.com/v1.0
+      DEFAULT_MAX_RESULTS: 20
+      DEFAULT_FILTER: "isRead eq false"
+      
+  slack-retriever:
+    memory: 256MB
+    timeout: 60s
+    schedule: "every 5 minutes"
+    env_vars:
+      DEFAULT_MAX_RESULTS: 50
+
+  notification-sender:
+    memory: 256MB
+    timeout: 120s
+    schedule: "every day 08:00"
+    env_vars:
+      MS_GRAPH_TOKEN_URL: https://login.microsoftonline.com
+      MS_GRAPH_API_URL: https://graph.microsoft.com/v1.0
