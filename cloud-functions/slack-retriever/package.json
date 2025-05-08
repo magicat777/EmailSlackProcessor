@@ -1,0 +1,18 @@
+{
+  "name": "icap-slack-retriever",
+  "version": "1.0.0",
+  "description": "ICAP Slack Retriever Cloud Function",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/secret-manager": "^4.1.4",
+    "@slack/web-api": "^6.8.1"
+  }
+}
